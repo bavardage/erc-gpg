@@ -42,9 +42,8 @@
                "\n")))
 
 (defun get-and-clear-encrypted-message (nick)
-  (let ((message (get-encrypted-message nick)))
-    (clear-lines nick)
-    message))
+  (prog1 (get-encrypted-message nick)
+    (clear-lines nick)))
 
 (defun listen-for (nick chan)
   (print "receiving encrypted message...")
