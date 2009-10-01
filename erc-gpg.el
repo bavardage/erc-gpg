@@ -40,10 +40,17 @@
   (let* ((sspec (aref parsed 1))
          (nick (substring (nth 0 (erc-parse-user sspec)) 1))
          (tgt (car (aref parsed 4)))
+         (true-target (if (equal tgt (erc-current-nick))
+                          nick tgt))
          (msg (aref parsed 5)))
     (when (string-match "\\(.+\\): PGP MESSAGE \\(.+\\)" msg)
       (when (equal (erc-current-nick) (match-string 1 msg))
-        (print (decrypt (get-url-contents (match-string 2 msg))))))))
+        (erc-display-message nil 'notice (find-buffer true-target)
+                             (format "Message decrypts as: %s"
+                                     (decode-coding-string
+                                      (decrypt 
+                                       (get-url-contents (match-string 2 msg)))
+                                      'utf-8)))))))
 
 (add-hook 'erc-server-PRIVMSG-functions 'listen-for-gpg-message)
 
