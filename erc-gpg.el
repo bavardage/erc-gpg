@@ -1,6 +1,7 @@
 ;;;; -*- indent-tabs-mode: nil -*-
 
 (require 'epg)
+(require 'url)
 
 (defun encrypt (str for-nick)
   (let ((context (epg-make-context 'OpenPGP)))
@@ -15,71 +16,65 @@
     (epg-context-set-armor context t)
     (epg-decrypt-string context str)))
 
-(defun erc-cmd-SENDENCRYPTED (recipient &rest words)
-  (let* ((message (mapconcat 'identity words " "))
-         (ciphertext (encrypt message recipient))
-         (lines (split-string ciphertext "\n")))
-    (dolist (line lines)
-      (erc-send-message line))))
-
-(setf *gpg-message-cache* (make-hash-table :test #'equal))
-(setf *gpg-nicks-sending-messages* nil)
-(setf *gpg-nicks-to-channels* (make-hash-table :test #'equal))
-
-(defun add-line (nick line)
-  (push line (gethash nick *gpg-message-cache*)))
-
-(defun clear-lines (nick)
-  (setf (gethash nick *gpg-message-cache*) nil))
-
-(defun get-encrypted-message (nick)
-  (let* ((lines (reverse (gethash nick *gpg-message-cache*)))
-         (ciphertext-body (mapconcat 'identity (cdr lines) "\n")))
-    (mapconcat 'identity
-               (list "-----BEGIN PGP MESSAGE-----"
-                     (car lines) "" ciphertext-body
-                     "-----END PGP MESSAGE-----")
-               "\n")))
-
-(defun get-and-clear-encrypted-message (nick)
-  (prog1 (get-encrypted-message nick)
-    (clear-lines nick)))
-
-(defun listen-for (nick chan)
-  (print "receiving encrypted message...")
-  (setf (gethash nick *gpg-nicks-to-channels*) chan)
-  (unless (member nick *gpg-nicks-sending-messages*)
-    (push nick *gpg-nicks-sending-messages*)))
-
-(defun stop-listen-for (nick)
-  (setf *gpg-nicks-sending-messages*
-        (remove nick *gpg-nicks-sending-messages*)))
+(defun erc-cmd-SENDENCRYPTED (nick &rest words)
+  (let* ((message (mapconcat 'identity words " ")) 
+         (keyname (or (cdr (assoc nick *nickname-to-keyname*)) nick)) ;;TODO cdrassoc
+         (url (encrypt-and-paste-string message keyname)))
+    (erc-send-message (format "%s: PGP MESSAGE %s" nick url))))
 
 (defun find-buffer (name) (dolist (b (erc-buffer-list)) (if (equalp (buffer-name b) name) (return b))))
 
-(defun message-over (nick)
-  (stop-listen-for nick)
-  (print "decrypting ciphertext...")
-  (let* ((ciphertext (get-and-clear-encrypted-message nick))
-         (plaintext (decrypt ciphertext))
-         (buffer-name (gethash nick *gpg-nicks-to-channels*))
-         (buffer (find-buffer buffer-name)))
-    (print plaintext)
-    (erc-display-message nil 'notice buffer plaintext))) ;;WTF IS THE BUFFER I SHOULD USE HERE?
+(defvar *nickname-to-keyname* nil
+  "An alist associating irc nicknames with key identifiers")
+;TODO: move these to .ercrc.el
+(push '("bavardage" . "jebavarde") *nickname-to-keyname*)
+(push '("bavfoo" . "jebavarde") *nickname-to-keyname*)
+(push '("bavbar" . "jebavarde") *nickname-to-keyname*)
 
-(defun gpg-process (process parsed &rest ignore)
+(defun listen-for-gpg-message (process parsed &rest ignore)
   (let* ((sspec (aref parsed 1))
          (nick (substring (nth 0 (erc-parse-user sspec)) 1))
          (tgt (car (aref parsed 4)))
          (msg (aref parsed 5)))
-    (cond
-     ((equal msg "-----BEGIN PGP MESSAGE-----")
-      (listen-for nick tgt)) ;;tgt isn't quite right :| since for queries it breaks
-     ((equal msg "-----END PGP MESSAGE-----")
-      (message-over nick))
-     ((member nick *gpg-nicks-sending-messages*)
-      (add-line nick msg)))))
+    (when (string-match "\\(.+\\): PGP MESSAGE \\(.+\\)" msg)
+      (when (equal (erc-current-nick) (match-string 1 msg))
+        (print (decrypt (get-url-contents (match-string 2 msg))))))))
 
-(add-hook 'erc-server-PRIVMSG-functions 'gpg-process)
+(add-hook 'erc-server-PRIVMSG-functions 'listen-for-gpg-message)
+
+
+(setf *gpg-pastebin-function* 'paste-to-dpaste)
+(defun encrypt-and-paste-string (str for-nick)
+  "Encrypts and pastes the message, returns the url for the message"
+  (apply *gpg-pastebin-function* `(,(encrypt str for-nick))))
+
+(defun paste-to-dpaste (str)
+  "Pastes str to dpaste and returns the url to the raw paste"
+  (let ((dpaste-url "http://dpaste.com/api/v1/")
+        (url-max-redirections 10)
+        (url-request-method "POST")
+        (url-request-data (make-query-string `(("content" . ,str)))))
+    (with-current-buffer (url-retrieve-synchronously dpaste-url)
+      (re-search-backward "\\/\\([0-9]+\\)\\/plain\\/")
+      (format "http://dpaste.com/%s/plain/" (match-string 1)))))
+
+
+(defun make-query-string (params)
+  "Returns a query string constructed from PARAMS, which should be
+a list with elements of the form (KEY . VALUE). KEY and VALUE
+should both be strings."
+  (mapconcat
+   (lambda (param)
+     (concat (url-hexify-string (car param)) "="
+             (url-hexify-string (cdr param))))
+   params "&"))
+
+(defun get-url-contents (url)
+  (let ((buffer (url-retrieve-synchronously url)))
+    (with-current-buffer buffer
+      (beginning-of-buffer)
+      (search-forward-regexp "\n\n")
+      (delete-region (point-min) (point))
+      (buffer-string))))
 
 (provide 'erc-gpg)
