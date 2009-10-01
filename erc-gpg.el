@@ -2,6 +2,7 @@
 
 (require 'epg)
 (require 'url)
+(require 'cl)
 
 (defun encrypt (str for-nick)
   (let ((context (epg-make-context 'OpenPGP)))
@@ -18,9 +19,13 @@
 
 (defun erc-cmd-SENDENCRYPTED (nick &rest words)
   (let* ((message (mapconcat 'identity words " ")) 
-         (keyname (or (cdr (assoc nick *nickname-to-keyname*)) nick)) ;;TODO cdrassoc
-         (url (encrypt-and-paste-string message keyname)))
-    (erc-send-message (format "%s: PGP MESSAGE %s" nick url))))
+         (keyname (or (cdr (assoc nick *nickname-to-keyname*)) nick))) ;;TODO cdrassoc
+    (encrypt-and-paste-string message keyname
+                              (lambda (url nick buffer)
+                                (with-current-buffer buffer
+                                  (erc-send-message 
+                                   (format "%s: PGP MESSAGE %s" nick url))))
+                              `(,nick ,(current-buffer)))))
 
 (defun find-buffer (name) (dolist (b (erc-buffer-list)) (if (equalp (buffer-name b) name) (return b))))
 
@@ -44,19 +49,26 @@
 
 
 (setf *gpg-pastebin-function* 'paste-to-dpaste)
-(defun encrypt-and-paste-string (str for-nick)
+(defun encrypt-and-paste-string (str for-nick callback cbargs)
   "Encrypts and pastes the message, returns the url for the message"
-  (apply *gpg-pastebin-function* `(,(encrypt str for-nick))))
+  (apply *gpg-pastebin-function* `(,(encrypt str for-nick) ,callback ,cbargs)))
 
-(defun paste-to-dpaste (str)
-  "Pastes str to dpaste and returns the url to the raw paste"
+(defun paste-to-dpaste (str callback cbargs)
+  "Pastes str to dpaste and calls callback with the url to the raw paste"
   (let ((dpaste-url "http://dpaste.com/api/v1/")
         (url-max-redirections 10)
         (url-request-method "POST")
         (url-request-data (make-query-string `(("content" . ,str)))))
-    (with-current-buffer (url-retrieve-synchronously dpaste-url)
-      (re-search-backward "\\/\\([0-9]+\\)\\/plain\\/")
-      (format "http://dpaste.com/%s/plain/" (match-string 1)))))
+    (url-retrieve 
+     dpaste-url
+     (lambda (status callback cbargs)
+       (with-current-buffer (current-buffer)
+         (let* ((paste (buffer-string))
+                (ignore (string-match "\\/\\([0-9]+\\)\\/plain\\/" paste))
+                (paste-id (match-string 1 paste))
+                (url (format "http://dpaste.com/%s/plain/" paste-id)))
+           (apply callback `(,url ,@cbargs)))))
+     `(,callback ,cbargs))))
 
 
 (defun make-query-string (params)
