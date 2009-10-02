@@ -18,25 +18,19 @@
     (epg-decrypt-string context str)))
 
 (defun erc-cmd-SENDENCRYPTED (nick &rest words)
-  (let* ((message (mapconcat 'identity words " ")) 
+  (let* ((message (mapconcat 'identity words " "))
          (keyname (or (cdr (assoc nick *nickname-to-keyname*)) nick))) ;;TODO cdrassoc
     (encrypt-and-paste-string message keyname
                               (lambda (url nick buffer)
                                 (with-current-buffer buffer
-                                  (erc-send-message 
-                                   (format "%s: PGP MESSAGE %s" nick url))))
+                                  (erc-send-message
+                                   (format "%s PGP-MESSAGE %s" nick url))))
                               `(,nick ,(current-buffer)))))
 
 (defun find-buffer (name) (dolist (b (erc-buffer-list)) (if (equalp (buffer-name b) name) (return b))))
 
 (defvar *nickname-to-keyname* nil
   "An alist associating irc nicknames with key identifiers")
-;TODO: move these to .ercrc.el
-(push '("bavardage" . "jebavarde") *nickname-to-keyname*)
-(push '("bavfoo" . "jebavarde") *nickname-to-keyname*)
-(push '("bavbar" . "jebavarde") *nickname-to-keyname*)
-
-
 
 (defun listen-for-gpg-message (process parsed &rest ignore)
   (let* ((sspec (aref parsed 1))
@@ -44,26 +38,24 @@
          (tgt (car (aref parsed 4)))
          (true-target (if (equal tgt (erc-current-nick))
                           nick tgt))
-         (msg (aref parsed 5)))
-    (when (string-match "\\(.+\\): PGP MESSAGE \\(.+\\)" msg)
-      (when (equal (erc-current-nick) (match-string 1 msg))
-        (erc-display-message nil 'notice
-                             (find-buffer true-target)
-                             (format "Got an encrypted message from %s" nick))
-        (get-url-contents
-         (match-string 2 msg)
-         (lambda (ciphertext true-target)
-           (erc-display-message nil 
-                                'notice 
-                                (find-buffer true-target)
-                                (format "Message decrypts as: %s"
-                                        (decode-coding-string
-                                         (decrypt ciphertext)
-                                         'utf-8))))
-         `(,true-target))))))
+         (msg (split-string (aref parsed 5))))
+    (when (and (string= (erc-current-nick) (car msg))
+               (string= "PGP-MESSAGE" (cadr msg)))
+      (erc-display-message nil 'notice (find-buffer true-target)
+                           (format "Got an encrypted message from %s" nick))
+      (get-url-contents
+       (caddr msg)
+       (lambda (ciphertext true-target)
+         (erc-display-message nil
+                              'notice
+                              (find-buffer true-target)
+                              (format "Message decrypts as: %s"
+                                      (decode-coding-string
+                                       (decrypt ciphertext)
+                                       'utf-8))))
+       `(,true-target)))))
 
 (add-hook 'erc-server-PRIVMSG-functions 'listen-for-gpg-message)
-
 
 (setf *gpg-pastebin-function* 'paste-to-dpaste)
 (defun encrypt-and-paste-string (str for-nick callback cbargs)
@@ -76,7 +68,7 @@
         (url-max-redirections 10)
         (url-request-method "POST")
         (url-request-data (make-query-string `(("content" . ,str)))))
-    (url-retrieve 
+    (url-retrieve
      dpaste-url
      (lambda (status callback cbargs)
        (with-current-buffer (current-buffer)
@@ -86,7 +78,6 @@
                 (url (format "http://dpaste.com/%s/plain/" paste-id)))
            (apply callback `(,url ,@cbargs)))))
      `(,callback ,cbargs))))
-
 
 (defun make-query-string (params)
   "Returns a query string constructed from PARAMS, which should be
