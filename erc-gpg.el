@@ -36,6 +36,8 @@
 (push '("bavfoo" . "jebavarde") *nickname-to-keyname*)
 (push '("bavbar" . "jebavarde") *nickname-to-keyname*)
 
+
+
 (defun listen-for-gpg-message (process parsed &rest ignore)
   (let* ((sspec (aref parsed 1))
          (nick (substring (nth 0 (erc-parse-user sspec)) 1))
@@ -45,12 +47,20 @@
          (msg (aref parsed 5)))
     (when (string-match "\\(.+\\): PGP MESSAGE \\(.+\\)" msg)
       (when (equal (erc-current-nick) (match-string 1 msg))
-        (erc-display-message nil 'notice (find-buffer true-target)
-                             (format "Message decrypts as: %s"
-                                     (decode-coding-string
-                                      (decrypt 
-                                       (get-url-contents (match-string 2 msg)))
-                                      'utf-8)))))))
+        (erc-display-message nil 'notice
+                             (find-buffer true-target)
+                             (format "Got an encrypted message from %s" nick))
+        (get-url-contents
+         (match-string 2 msg)
+         (lambda (ciphertext true-target)
+           (erc-display-message nil 
+                                'notice 
+                                (find-buffer true-target)
+                                (format "Message decrypts as: %s"
+                                        (decode-coding-string
+                                         (decrypt ciphertext)
+                                         'utf-8))))
+         `(,true-target))))))
 
 (add-hook 'erc-server-PRIVMSG-functions 'listen-for-gpg-message)
 
@@ -88,12 +98,14 @@ should both be strings."
              (url-hexify-string (cdr param))))
    params "&"))
 
-(defun get-url-contents (url)
-  (let ((buffer (url-retrieve-synchronously url)))
-    (with-current-buffer buffer
-      (beginning-of-buffer)
-      (search-forward-regexp "\n\n")
-      (delete-region (point-min) (point))
-      (buffer-string))))
+(defun get-url-contents (url callback cbargs)
+  (url-retrieve url
+                (lambda (status callback cbargs)
+                  (with-current-buffer (current-buffer)
+                    (beginning-of-buffer)
+                    (search-forward-regexp "\n\n")
+                    (delete-region (point-min) (point))
+                    (apply callback `(,(buffer-string) ,@cbargs))))
+                `(,callback ,cbargs)))
 
 (provide 'erc-gpg)
